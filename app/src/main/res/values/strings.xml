@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Pomidor</string>
+    <string name="channel_timer_name">Таймер</string>
+    <string name="channel_timer_desc">Текущий отсчёт помидора</string>
+    <string name="channel_alarm_name">Сигнал</string>
+    <string name="channel_alarm_desc">Заставка на весь экран в конце помидора и перерыва</string>
+</resources>
