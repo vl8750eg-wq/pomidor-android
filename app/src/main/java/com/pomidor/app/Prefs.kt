@@ -77,6 +77,64 @@ class Prefs(context: Context) {
             .apply()
     }
 
+    fun saveAlarmPayload(p: AlarmPayload) {
+        sp.edit()
+            .putBoolean("alarm_set", true)
+            .putString("alarm_title", p.title)
+            .putString("alarm_sub", p.sub)
+            .putString("alarm_emoji", p.emoji)
+            .putLong("alarm_veil", p.veil)
+            .putLong("alarm_fg", p.fg)
+            .putString("alarm_next_title", p.nextTitle)
+            .putInt("alarm_next_min", p.nextMin)
+            .putBoolean("alarm_auto", p.auto)
+            .putString("alarm_next_phase", p.nextPhase)
+            .putInt("alarm_next_dur", p.nextDurSec)
+            .putInt("alarm_in_set", p.newInSet)
+            .putInt("alarm_done", p.newDone)
+            .putInt("alarm_mins", p.newMins)
+            .putLong("alarm_gen", p.gen)
+            .putLong("alarm_ts", p.tsMillis)
+            .apply()
+    }
+
+    fun loadAlarmPayload(): AlarmPayload? {
+        if (!sp.getBoolean("alarm_set", false)) return null
+        return try {
+            AlarmPayload(
+                sp.getString("alarm_title", "") ?: "",
+                sp.getString("alarm_sub", "") ?: "",
+                sp.getString("alarm_emoji", "") ?: "",
+                sp.getLong("alarm_veil", TimerService.VEIL_RED),
+                sp.getLong("alarm_fg", TimerService.FG_RED),
+                sp.getString("alarm_next_title", "") ?: "",
+                sp.getInt("alarm_next_min", 0),
+                sp.getBoolean("alarm_auto", false),
+                sp.getString("alarm_next_phase", Phase.FOCUS.name) ?: Phase.FOCUS.name,
+                sp.getInt("alarm_next_dur", 0),
+                sp.getInt("alarm_in_set", 0),
+                sp.getInt("alarm_done", 0),
+                sp.getInt("alarm_mins", 0),
+                sp.getLong("alarm_gen", 0L),
+                sp.getLong("alarm_ts", 0L),
+            )
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    fun clearAlarmPayload() {
+        sp.edit().putBoolean("alarm_set", false).apply()
+    }
+
+    var consumedGen: Long
+        get() = sp.getLong("alarm_consumed", 0L)
+        set(v) = sp.edit().putLong("alarm_consumed", v).apply()
+
+    fun clearConsumed() {
+        sp.edit().putLong("alarm_consumed", 0L).apply()
+    }
+
     fun loadRun(): Triple<Phase, Int, Boolean> {
         val phase = try {
             Phase.valueOf(sp.getString("run_phase", Phase.FOCUS.name) ?: Phase.FOCUS.name)

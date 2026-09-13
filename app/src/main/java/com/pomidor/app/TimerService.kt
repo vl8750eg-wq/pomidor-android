@@ -1,10 +1,12 @@
 package com.pomidor.app
 
+import android.app.AlarmManager
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.os.IBinder
@@ -42,6 +44,84 @@ object TimerState {
     }
 }
 
+data class FinishPreview(
+    val next: Phase,
+    val title: String,
+    val sub: String,
+    val emoji: String,
+    val veil: Long,
+    val fg: Long,
+    val auto: Boolean,
+    val nextMin: Int,
+    val newInSet: Int,
+    val newDone: Int,
+    val newMins: Int,
+)
+
+data class AlarmPayload(
+    val title: String,
+    val sub: String,
+    val emoji: String,
+    val veil: Long,
+    val fg: Long,
+    val nextTitle: String,
+    val nextMin: Int,
+    val auto: Boolean,
+    val nextPhase: String,
+    val nextDurSec: Int,
+    val newInSet: Int,
+    val newDone: Int,
+    val newMins: Int,
+    val gen: Long,
+    val tsMillis: Long,
+)
+
+fun ensureAlarmChannel(ctx: Context) {
+    try {
+        val nm = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        nm.createNotificationChannel(
+            NotificationChannel(
+                TimerService.CH_ALARM,
+                ctx.getString(R.string.channel_alarm_name),
+                NotificationManager.IMPORTANCE_HIGH,
+            ).apply {
+                description = ctx.getString(R.string.channel_alarm_desc)
+            },
+        )
+    } catch (_: Exception) {
+    }
+}
+
+fun showAlarmNotification(ctx: Context, p: AlarmPayload) {
+    try {
+        ensureAlarmChannel(ctx)
+        val i = Intent(ctx, AlarmActivity::class.java)
+            .putExtra(AlarmActivity.EXTRA_TITLE, p.title)
+            .putExtra(AlarmActivity.EXTRA_SUB, p.sub)
+            .putExtra(AlarmActivity.EXTRA_EMOJI, p.emoji)
+            .putExtra(AlarmActivity.EXTRA_VEIL, p.veil)
+            .putExtra(AlarmActivity.EXTRA_FG, p.fg)
+            .putExtra(AlarmActivity.EXTRA_NEXT_TITLE, p.nextTitle)
+            .putExtra(AlarmActivity.EXTRA_NEXT_MIN, p.nextMin)
+            .putExtra(AlarmActivity.EXTRA_AUTO, p.auto)
+        val pi = PendingIntent.getActivity(
+            ctx, TimerService.ALARM_NOTIF_ID, i,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val n = NotificationCompat.Builder(ctx, TimerService.CH_ALARM)
+            .setSmallIcon(R.drawable.ic_stat_tomato)
+            .setContentTitle(p.title)
+            .setContentText(p.sub)
+            .setPriority(NotificationCompat.PRIORITY_MAX)
+            .setCategory(NotificationCompat.CATEGORY_ALARM)
+            .setFullScreenIntent(pi, true)
+            .setAutoCancel(true)
+            .build()
+        NotificationManagerCompat.from(ctx).notify(TimerService.ALARM_NOTIF_ID, n)
+    } catch (_: Exception) {
+    }
+}
+
 class TimerService : Service() {
 
     companion object {
@@ -56,11 +136,18 @@ class TimerService : Service() {
         const val CH_ALARM = "pomidor_alarm"
         const val NOTIF_ID = 11
         const val ALARM_NOTIF_ID = 12
+        const val ALARM_EXACT_REQ = 4711
 
         const val VEIL_RED = 0xFFD33F2E
         const val VEIL_GREEN = 0xFF1B7A43
         const val FG_RED = 0xFFFF5733
         const val FG_GREEN = 0xFF3DDC84
+
+        @Volatile
+        var alive = false
+
+        @Volatile
+        var lastTickMs = 0L
 
         fun cmd(ctx: Context, action: String, phase: Phase? = null) {
             val i = Intent(ctx, TimerService::class.java).setAction(action)
@@ -74,6 +161,7 @@ class TimerService : Service() {
     private var state = TimerUiState()
     private var job: Job? = null
     private var lastShownSec = -1
+    private var currentGen = 0L
 
     override fun onCreate() {
         super.onCreate()
@@ -87,6 +175,8 @@ class TimerService : Service() {
             prefs.initialState()
         }
         TimerState.update(state)
+        alive = true
+        lastTickMs = SystemClock.elapsedRealtime()
         if (wasRunning && runRemaining > 0) {
             startCountdown()
         }
@@ -114,6 +204,7 @@ class TimerService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
+        alive = false
         job?.cancel()
         scope.cancel()
         super.onDestroy()
@@ -123,6 +214,12 @@ class TimerService : Service() {
         Phase.FOCUS -> prefs.focus * 60
         Phase.SHORT -> prefs.short * 60
         Phase.LONG -> prefs.long * 60
+    }
+
+    private fun durationMin(phase: Phase): Int = when (phase) {
+        Phase.FOCUS -> prefs.focus
+        Phase.SHORT -> prefs.short
+        Phase.LONG -> prefs.long
     }
 
     private fun publish() {
@@ -145,11 +242,15 @@ class TimerService : Service() {
         state = state.copy(running = true)
         publish()
         startForeground(NOTIF_ID, timerNotification())
-        val deadline = SystemClock.elapsedRealtime() + state.remainingSec * 1000L
+        lastTickMs = SystemClock.elapsedRealtime()
+        val deadlineElapsed = SystemClock.elapsedRealtime() + state.remainingSec * 1000L
+        val deadlineWall = System.currentTimeMillis() + state.remainingSec * 1000L
+        armExactAlarm(deadlineWall)
         lastShownSec = -1
         job = scope.launch {
             while (true) {
-                val rem = ((deadline - SystemClock.elapsedRealtime()) / 1000).toInt().coerceAtLeast(0)
+                lastTickMs = SystemClock.elapsedRealtime()
+                val rem = ((deadlineElapsed - SystemClock.elapsedRealtime()) / 1000).toInt().coerceAtLeast(0)
                 if (rem != state.remainingSec) {
                     state = state.copy(remainingSec = rem)
                     publish()
@@ -170,6 +271,9 @@ class TimerService : Service() {
 
     private fun pause() {
         job?.cancel()
+        currentGen = 0L
+        cancelExactAlarm()
+        prefs.clearConsumed()
         state = state.copy(running = false)
         publish()
         NotificationManagerCompat.from(this).notify(NOTIF_ID, timerNotification())
@@ -177,6 +281,9 @@ class TimerService : Service() {
 
     private fun reset() {
         job?.cancel()
+        currentGen = 0L
+        cancelExactAlarm()
+        prefs.clearConsumed()
         val dur = durationOf(state.phase)
         state = state.copy(remainingSec = dur, totalSec = dur, running = false)
         publish()
@@ -185,6 +292,9 @@ class TimerService : Service() {
 
     private fun setPhase(ph: Phase) {
         job?.cancel()
+        currentGen = 0L
+        cancelExactAlarm()
+        prefs.clearConsumed()
         val dur = durationOf(ph)
         state = state.copy(phase = ph, remainingSec = dur, totalSec = dur, running = false)
         publish()
@@ -206,65 +316,117 @@ class TimerService : Service() {
         }
     }
 
+    private fun previewFinish(): FinishPreview {
+        val per = prefs.perSet.coerceAtLeast(2)
+        return if (state.phase == Phase.FOCUS) {
+            val inSet = state.inSet + 1
+            val isLong = inSet % per == 0
+            val next = if (isLong) Phase.LONG else Phase.SHORT
+            val auto = (next != Phase.FOCUS && prefs.autoBreak) || (next == Phase.FOCUS && prefs.autoFocus)
+            FinishPreview(
+                next,
+                "ПОМИДОР ГОТОВ! 🍅",
+                if (isLong) "Сделано $inSet в сете. Большой перерыв!" else "Сделано $inSet в сете. Маленький отдых.",
+                "🍅", VEIL_RED, FG_RED, auto, durationMin(next),
+                inSet, state.totalDone + 1, state.focusMinutes + prefs.focus,
+            )
+        } else {
+            val inSet = if (state.phase == Phase.LONG) 0 else state.inSet
+            val (title, sub, emoji) = if (state.phase == Phase.LONG) {
+                Triple("ЛОНГ КОНЧИЛСЯ! 🚀", "Ты отдохнул. Новый сет из свежих помидоров.", "🚀")
+            } else {
+                Triple("ОТДЫХ КОНЧИЛСЯ! 💪", "Пора за работу. Погнали!", "💪")
+            }
+            FinishPreview(
+                Phase.FOCUS, title, sub, emoji, VEIL_GREEN, FG_GREEN,
+                prefs.autoFocus, durationMin(Phase.FOCUS),
+                inSet, state.totalDone, state.focusMinutes,
+            )
+        }
+    }
+
     private fun advance(silent: Boolean) {
         job?.cancel()
-        val per = prefs.perSet.coerceAtLeast(2)
-        val finishedFocus = state.phase == Phase.FOCUS
-        var inSet = state.inSet
-        var done = state.totalDone
-        var mins = state.focusMinutes
-
-        val next: Phase
-        val title: String
-        val sub: String
-        val emoji: String
-        val veil: Long
-        val fg: Long
-
-        if (finishedFocus) {
-            done += 1
-            inSet += 1
-            mins += prefs.focus
-            val isLong = inSet % per == 0
-            next = if (isLong) Phase.LONG else Phase.SHORT
-            title = "ПОМИДОР ГОТОВ! 🍅"
-            sub = if (isLong) "Сделано $inSet в сете. Большой перерыв!" else "Сделано $inSet в сете. Маленький отдых."
-            emoji = "🍅"
-            veil = VEIL_RED
-            fg = FG_RED
-        } else {
-            if (state.phase == Phase.LONG) inSet = 0
-            next = Phase.FOCUS
-            if (state.phase == Phase.LONG) {
-                title = "ЛОНГ КОНЧИЛСЯ! 🚀"
-                sub = "Ты отдохнул. Новый сет из свежих помидоров."
-                emoji = "🚀"
+        val gen = currentGen
+        currentGen = 0L
+        cancelExactAlarm()
+        if (gen != 0L && prefs.consumedGen == gen) {
+            // Системный будильник уже сработал и показал заставку:
+            // подхватываем следующую фазу без повторного overlay.
+            prefs.clearConsumed()
+            val preview = previewFinish()
+            val dur = durationOf(preview.next)
+            state = TimerUiState(preview.next, dur, dur, running = false, prefs.inSet, prefs.totalDone, prefs.focusMinutes)
+            publish()
+            if (preview.auto) {
+                startCountdown()
             } else {
-                title = "ОТДЫХ КОНЧИЛСЯ! 💪"
-                sub = "Пора за работу. Погнали!"
-                emoji = "💪"
+                NotificationManagerCompat.from(this).notify(NOTIF_ID, timerNotification())
             }
-            veil = VEIL_GREEN
-            fg = FG_GREEN
+            return
         }
-
-        prefs.saveStats(inSet, done, mins)
-        val auto = (next != Phase.FOCUS && prefs.autoBreak) || (next == Phase.FOCUS && prefs.autoFocus)
-        val dur = when (next) {
-            Phase.FOCUS -> prefs.focus * 60
-            Phase.SHORT -> prefs.short * 60
-            Phase.LONG -> prefs.long * 60
-        }
-        state = TimerUiState(next, dur, dur, running = false, inSet, done, mins)
+        val preview = previewFinish()
+        prefs.saveStats(preview.newInSet, preview.newDone, preview.newMins)
+        val dur = durationOf(preview.next)
+        state = TimerUiState(preview.next, dur, dur, running = false, preview.newInSet, preview.newDone, preview.newMins)
         publish()
 
         if (!silent) {
-            fireAlarm(title, sub, emoji, veil, fg, next, dur / 60, auto)
+            showAlarmNotification(
+                this,
+                AlarmPayload(
+                    preview.title, preview.sub, preview.emoji, preview.veil, preview.fg,
+                    phaseTitle(preview.next), preview.nextMin, preview.auto,
+                    preview.next.name, dur, preview.newInSet, preview.newDone, preview.newMins, 0L, 0L,
+                ),
+            )
         }
-        if (auto) {
+        if (preview.auto) {
             startCountdown()
         } else {
             NotificationManagerCompat.from(this).notify(NOTIF_ID, timerNotification())
+        }
+    }
+
+    private fun armExactAlarm(deadlineWallMs: Long) {
+        try {
+            val preview = previewFinish()
+            val dur = durationOf(preview.next)
+            val payload = AlarmPayload(
+                preview.title, preview.sub, preview.emoji, preview.veil, preview.fg,
+                phaseTitle(preview.next), preview.nextMin, preview.auto,
+                preview.next.name, dur, preview.newInSet, preview.newDone, preview.newMins,
+                System.nanoTime(), deadlineWallMs,
+            )
+            currentGen = payload.gen
+            prefs.saveAlarmPayload(payload)
+            val am = getSystemService(Context.ALARM_SERVICE) as AlarmManager
+            val op = PendingIntent.getBroadcast(
+                this, ALARM_EXACT_REQ, Intent(this, AlarmReceiver::class.java),
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            )
+            val show = PendingIntent.getActivity(
+                this, ALARM_EXACT_REQ + 1,
+                Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            )
+            // setAlarmClock: точный, пробивает Doze, не требует разрешений,
+            // запуск activity из него не блокируется фоном.
+            am.setAlarmClock(AlarmManager.AlarmClockInfo(deadlineWallMs, show), op)
+        } catch (_: Exception) {
+        }
+    }
+
+    private fun cancelExactAlarm() {
+        try {
+            prefs.clearAlarmPayload()
+            val am = getSystemService(Context.ALARM_SERVICE) as AlarmManager
+            val op = PendingIntent.getBroadcast(
+                this, ALARM_EXACT_REQ, Intent(this, AlarmReceiver::class.java),
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            )
+            am.cancel(op)
+        } catch (_: Exception) {
         }
     }
 
@@ -303,35 +465,6 @@ class TimerService : Service() {
         return b.build()
     }
 
-    private fun fireAlarm(
-        title: String, sub: String, emoji: String,
-        veil: Long, fg: Long, next: Phase, nextMin: Int, auto: Boolean,
-    ) {
-        val i = Intent(this, AlarmActivity::class.java)
-            .putExtra(AlarmActivity.EXTRA_TITLE, title)
-            .putExtra(AlarmActivity.EXTRA_SUB, sub)
-            .putExtra(AlarmActivity.EXTRA_EMOJI, emoji)
-            .putExtra(AlarmActivity.EXTRA_VEIL, veil)
-            .putExtra(AlarmActivity.EXTRA_FG, fg)
-            .putExtra(AlarmActivity.EXTRA_NEXT_TITLE, phaseTitle(next))
-            .putExtra(AlarmActivity.EXTRA_NEXT_MIN, nextMin)
-            .putExtra(AlarmActivity.EXTRA_AUTO, auto)
-        val pi = PendingIntent.getActivity(
-            this, ALARM_NOTIF_ID, i,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-        )
-        val n = NotificationCompat.Builder(this, CH_ALARM)
-            .setSmallIcon(R.drawable.ic_stat_tomato)
-            .setContentTitle(title)
-            .setContentText(sub)
-            .setPriority(NotificationCompat.PRIORITY_MAX)
-            .setCategory(NotificationCompat.CATEGORY_ALARM)
-            .setFullScreenIntent(pi, true)
-            .setAutoCancel(true)
-            .build()
-        NotificationManagerCompat.from(this).notify(ALARM_NOTIF_ID, n)
-    }
-
     private fun phaseTitle(ph: Phase): String = when (ph) {
         Phase.FOCUS -> "Фокус"
         Phase.SHORT -> "Короткий отдых"
@@ -345,10 +478,33 @@ class TimerService : Service() {
                 description = getString(R.string.channel_timer_desc)
             },
         )
-        nm.createNotificationChannel(
-            NotificationChannel(CH_ALARM, getString(R.string.channel_alarm_name), NotificationManager.IMPORTANCE_HIGH).apply {
-                description = getString(R.string.channel_alarm_desc)
-            },
-        )
+        ensureAlarmChannel(this)
+    }
+}
+
+/**
+ * Страховка на случай убитого сервиса / Doze: срабатывает по системному
+ * будильнику и показывает заставку поверх любых приложений. Если сервис жив
+ * и здоров (тик < 5 с назад) — ничего не делает, отработает сам сервис.
+ */
+class AlarmReceiver : BroadcastReceiver() {
+    override fun onReceive(ctx: Context, intent: Intent) {
+        try {
+            val appCtx = ctx.applicationContext
+            val prefs = Prefs(appCtx)
+            val p = prefs.loadAlarmPayload() ?: return
+            val healthy = TimerService.alive &&
+                SystemClock.elapsedRealtime() - TimerService.lastTickMs < 5000
+            if (healthy) return
+            prefs.clearAlarmPayload()
+            prefs.saveStats(p.newInSet, p.newDone, p.newMins)
+            try {
+                prefs.saveRun(Phase.valueOf(p.nextPhase), p.nextDurSec, false)
+            } catch (_: Exception) {
+            }
+            prefs.consumedGen = p.gen
+            showAlarmNotification(appCtx, p)
+        } catch (_: Exception) {
+        }
     }
 }
