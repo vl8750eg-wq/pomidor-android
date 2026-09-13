@@ -117,7 +117,7 @@ fun PomidorApp() {
 
     fun refreshPerms() {
         try {
-            notifOk = (ctx.getSystemService(NOTIFICATION_SERVICE) as NotificationManager).areNotificationsEnabled()
+            notifOk = (ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).areNotificationsEnabled()
         } catch (_: Exception) {
         }
         try {
@@ -125,7 +125,7 @@ fun PomidorApp() {
         } catch (_: Exception) {
         }
         try {
-            batteryOk = (ctx.getSystemService(POWER_SERVICE) as PowerManager)
+            batteryOk = (ctx.getSystemService(Context.POWER_SERVICE) as PowerManager)
                 .isIgnoringBatteryOptimizations(ctx.packageName)
         } catch (_: Exception) {
         }
