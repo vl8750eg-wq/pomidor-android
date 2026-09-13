@@ -11,6 +11,7 @@ import android.content.Context
 import android.content.Intent
 import android.os.IBinder
 import android.os.SystemClock
+import android.provider.Settings
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
@@ -504,6 +505,14 @@ class AlarmReceiver : BroadcastReceiver() {
             }
             prefs.consumedGen = p.gen
             showAlarmNotification(appCtx, p)
+            // Дубль поверх всего: overlay-окно пробивает MIUI/HyperOS,
+            // где запуск activity из фона зарезан.
+            try {
+                if (Settings.canDrawOverlays(appCtx)) {
+                    OverlayService.show(appCtx, p)
+                }
+            } catch (_: Exception) {
+            }
         } catch (_: Exception) {
         }
     }

@@ -1,9 +1,14 @@
 package com.pomidor.app
 
 import android.Manifest
+import android.app.NotificationManager
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.PowerManager
+import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -35,6 +40,7 @@ import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -42,6 +48,8 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -51,6 +59,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -101,6 +110,35 @@ fun PomidorApp() {
         }
     }
 
+    var notifOk by remember { mutableStateOf(true) }
+    var overlayOk by remember { mutableStateOf(false) }
+    var batteryOk by remember { mutableStateOf(false) }
+
+    fun refreshPerms() {
+        try {
+            notifOk = (ctx.getSystemService(NOTIFICATION_SERVICE) as NotificationManager).areNotificationsEnabled()
+        } catch (_: Exception) {
+        }
+        try {
+            overlayOk = Settings.canDrawOverlays(ctx)
+        } catch (_: Exception) {
+        }
+        try {
+            batteryOk = (ctx.getSystemService(POWER_SERVICE) as PowerManager)
+                .isIgnoringBatteryOptimizations(ctx.packageName)
+        } catch (_: Exception) {
+        }
+    }
+
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val obs = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) refreshPerms()
+        }
+        lifecycleOwner.lifecycle.addObserver(obs)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(obs) }
+    }
+
     var focusMin by remember { mutableIntStateOf(prefs.focus) }
     var shortMin by remember { mutableIntStateOf(prefs.short) }
     var longMin by remember { mutableIntStateOf(prefs.long) }
@@ -127,6 +165,10 @@ fun PomidorApp() {
         ) {
             Header(state.totalDone)
             Spacer(Modifier.height(12.dp))
+            if (!notifOk || !overlayOk || !batteryOk) {
+                PermissionCard(notifOk, overlayOk, batteryOk)
+                Spacer(Modifier.height(12.dp))
+            }
             PhaseTabs(state.phase) { TimerService.cmd(ctx, TimerService.ACTION_SET_PHASE, it) }
             Spacer(Modifier.height(12.dp))
             if (wide) {
@@ -182,6 +224,83 @@ fun PomidorApp() {
                 color = MUTED,
                 fontSize = 12.sp,
             )
+        }
+    }
+}
+
+@Composable
+fun PermissionCard(notifOk: Boolean, overlayOk: Boolean, batteryOk: Boolean) {
+    val ctx = LocalContext.current
+    Column(
+        modifier = Modifier
+            .widthIn(max = 560.dp)
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(CARD)
+            .padding(16.dp),
+    ) {
+        Text("🔔 ДОСТУПЫ ДЛЯ БУДИЛЬНИКА", color = GOLD, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+        Spacer(Modifier.height(4.dp))
+        Text(
+            "Без них заставка не выйдет поверх других приложений (особенно на Xiaomi/POCO).",
+            color = MUTED,
+            fontSize = 12.sp,
+        )
+        Spacer(Modifier.height(8.dp))
+        if (!notifOk) {
+            PermRow("Уведомления", "ДАТЬ") {
+                try {
+                    ctx.startActivity(
+                        Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                            .putExtra(Settings.EXTRA_APP_PACKAGE, ctx.packageName),
+                    )
+                } catch (_: Exception) {
+                }
+            }
+        }
+        if (!overlayOk) {
+            PermRow("Поверх приложений", "ДАТЬ") {
+                try {
+                    ctx.startActivity(
+                        Intent(
+                            Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                            Uri.parse("package:${ctx.packageName}"),
+                        ),
+                    )
+                } catch (_: Exception) {
+                }
+            }
+        }
+        if (!batteryOk) {
+            PermRow("Без экономии батареи", "ДАТЬ") {
+                try {
+                    ctx.startActivity(
+                        Intent(
+                            Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                            Uri.parse("package:${ctx.packageName}"),
+                        ),
+                    )
+                } catch (_: Exception) {
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun PermRow(text: String, btn: String, onClick: () -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text("✖  $text", color = TEXT, fontSize = 13.sp, modifier = Modifier.weight(1f))
+        Button(
+            onClick = onClick,
+            colors = ButtonDefaults.buttonColors(containerColor = ACCENT, contentColor = TEXT),
+        ) {
+            Text(btn, fontSize = 12.sp, fontWeight = FontWeight.Bold)
         }
     }
 }
