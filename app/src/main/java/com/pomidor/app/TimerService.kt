@@ -93,6 +93,18 @@ fun ensureAlarmChannel(ctx: Context) {
     }
 }
 
+fun fireAlarmNow(ctx: Context, p: AlarmPayload) {
+    showAlarmNotification(ctx, p)
+    // Дубль поверх всего: overlay-окно пробивает MIUI/HyperOS,
+    // где запуск activity из фона зарезан.
+    try {
+        if (Settings.canDrawOverlays(ctx)) {
+            OverlayService.show(ctx, p)
+        }
+    } catch (_: Exception) {
+    }
+}
+
 fun showAlarmNotification(ctx: Context, p: AlarmPayload) {
     try {
         ensureAlarmChannel(ctx)
@@ -131,6 +143,7 @@ class TimerService : Service() {
         const val ACTION_SKIP = "com.pomidor.app.SKIP"
         const val ACTION_SET_PHASE = "com.pomidor.app.SET_PHASE"
         const val ACTION_APPLY_SETTINGS = "com.pomidor.app.APPLY_SETTINGS"
+        const val ACTION_TEST_ALARM = "com.pomidor.app.TEST_ALARM"
         const val EXTRA_PHASE = "phase"
 
         const val CH_TIMER = "pomidor_timer"
@@ -198,6 +211,7 @@ class TimerService : Service() {
                 setPhase(ph)
             }
             ACTION_APPLY_SETTINGS -> applySettings()
+            ACTION_TEST_ALARM -> testAlarm()
         }
         return START_STICKY
     }
@@ -317,8 +331,20 @@ class TimerService : Service() {
         }
     }
 
-    private fun previewFinish(): FinishPreview {
-        val per = prefs.perSet.coerceAtLeast(2)
+    private fun testAlarm() {
+        // Мгновенная проверка боевым путём: FSI + overlay, без трогания статистики.
+        fireAlarmNow(
+            this,
+            AlarmPayload(
+                "🔔 ТЕСТ ЗАСТАВКИ", "Если видишь это поверх приложений — всё работает.",
+                "🔔", VEIL_RED, FG_RED, phaseTitle(Phase.FOCUS), durationMin(Phase.FOCUS),
+                false, Phase.FOCUS.name, durationOf(Phase.FOCUS),
+                state.inSet, state.totalDone, state.focusMinutes, 0L, 0L,
+            ),
+        )
+    }
+
+    private fun previewFinish(): FinishPreview {        val per = prefs.perSet.coerceAtLeast(2)
         return if (state.phase == Phase.FOCUS) {
             val inSet = state.inSet + 1
             val isLong = inSet % per == 0
@@ -504,15 +530,7 @@ class AlarmReceiver : BroadcastReceiver() {
             } catch (_: Exception) {
             }
             prefs.consumedGen = p.gen
-            showAlarmNotification(appCtx, p)
-            // Дубль поверх всего: overlay-окно пробивает MIUI/HyperOS,
-            // где запуск activity из фона зарезан.
-            try {
-                if (Settings.canDrawOverlays(appCtx)) {
-                    OverlayService.show(appCtx, p)
-                }
-            } catch (_: Exception) {
-            }
+            fireAlarmNow(appCtx, p)
         } catch (_: Exception) {
         }
     }

@@ -464,6 +464,15 @@ fun SettingsCard(
         ToggleRow("Автостарт отдыха", autoBreak, onAutoBreak)
         ToggleRow("Автостарт фокуса после отдыха", autoFocus, onAutoFocus)
         ToggleRow("Звук", sound, onSound)
+        Spacer(Modifier.height(4.dp))
+        val tctx = LocalContext.current
+        Button(
+            onClick = { TimerService.cmd(tctx, TimerService.ACTION_TEST_ALARM) },
+            modifier = Modifier.fillMaxWidth(),
+            colors = ButtonDefaults.buttonColors(containerColor = CARD2, contentColor = GOLD),
+        ) {
+            Text("🔔 Тест заставки", fontSize = 13.sp, fontWeight = FontWeight.Bold)
+        }
     }
 }
 
